@@ -145,6 +145,31 @@ async def run_action():
         action = event_payload.get("action")
         if action in ["created", "edited"]:
             comment_body = event_payload.get("comment", {}).get("body")
+
+            # Handle apply suggestion checkbox
+            if (action == "edited" and comment_body
+                    and 'apply_suggestion:' in comment_body
+                    and '- [x] **Apply this suggestion**' in comment_body):
+                try:
+                    if event_payload.get("issue", {}).get("pull_request"):
+                        url = event_payload.get("issue", {}).get("pull_request", {}).get("url")
+                    elif event_payload.get("comment", {}).get("pull_request_url"):
+                        url = event_payload.get("comment", {}).get("pull_request_url")
+                    else:
+                        url = None
+                    if url:
+                        comment_id = event_payload.get("comment", {}).get("id")
+                        apply_repo_settings(url)
+                        provider = get_git_provider()(pr_url=url)
+                        get_logger().info(f"Handling apply suggestion checkbox for {url}")
+                        updated_body = PRCodeSuggestions.handle_suggestion_checkbox(comment_body, provider)
+                        if updated_body != comment_body:
+                            provider.edit_comment_from_comment_id(comment_id, updated_body)
+                            get_logger().info(f"Successfully applied suggestion(s) for {url}")
+                except Exception as e:
+                    get_logger().error(f"Failed to handle apply suggestion checkbox: {e}")
+                return
+
             try:
                 if GITHUB_EVENT_NAME == "pull_request_review_comment":
                     if '/ask' in comment_body:

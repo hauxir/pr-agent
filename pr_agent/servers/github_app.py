@@ -23,6 +23,7 @@ from pr_agent.identity_providers import get_identity_provider
 from pr_agent.identity_providers.identity_provider import Eligibility
 from pr_agent.log import LoggingFormat, get_logger, setup_logger
 from pr_agent.servers.utils import DefaultDictWithTimeout, verify_signature
+from pr_agent.tools.pr_code_suggestions import PRCodeSuggestions
 
 setup_logger(fmt=LoggingFormat.JSON, level=get_settings().get("CONFIG.LOG_LEVEL", "DEBUG"))
 base_path = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -346,7 +347,26 @@ async def handle_request(body: Dict[str, Any], event: str):
         get_logger().debug(f'Request body', artifact=body, event=event)
         await handle_new_pr_opened(body, event, sender, sender_id, action, log_context, agent)
     elif event == "issue_comment" and 'edited' in action:
-        pass # handle_checkbox_clicked
+        comment_body = body.get("comment", {}).get("body", "")
+        if comment_body and 'apply_suggestion:' in comment_body and '- [x] **Apply this suggestion**' in comment_body:
+            try:
+                if "issue" in body and "pull_request" in body["issue"] and "url" in body["issue"]["pull_request"]:
+                    api_url = body["issue"]["pull_request"]["url"]
+                elif "comment" in body and "pull_request_url" in body["comment"]:
+                    api_url = body["comment"]["pull_request_url"]
+                else:
+                    return {}
+                comment_id = body.get("comment", {}).get("id")
+                apply_repo_settings(api_url)
+                provider = get_git_provider_with_context(pr_url=api_url)
+                with get_logger().contextualize(**log_context):
+                    get_logger().info(f"Handling apply suggestion checkbox for {api_url}")
+                    updated_body = PRCodeSuggestions.handle_suggestion_checkbox(comment_body, provider)
+                    if updated_body != comment_body:
+                        provider.edit_comment_from_comment_id(comment_id, updated_body)
+                        get_logger().info(f"Successfully applied suggestion(s) for {api_url}")
+            except Exception as e:
+                get_logger().error(f"Failed to handle apply suggestion checkbox: {e}")
     # handle pull_request event with synchronize action - "push trigger" for new commits
     elif event == 'pull_request' and action == 'synchronize':
         await handle_push_trigger_for_new_commits(body, event, sender,sender_id,  action, log_context, agent)
