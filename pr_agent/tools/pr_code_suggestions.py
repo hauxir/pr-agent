@@ -1016,9 +1016,10 @@ class PRCodeSuggestions:
 
                     # Update the checkbox text to indicate the suggestion was applied
                     old_checkbox = match.group(0)
-                    new_checkbox = old_checkbox.replace(
-                        '- [x] **Apply this suggestion**',
-                        '- [x] ✅ **Suggestion applied**',
+                    new_checkbox = re.sub(
+                        r'- \[x\] \*\*Apply this suggestion\*\*',
+                        '\n\n`[Suggestion processed]`\n',
+                        old_checkbox,
                     )
                     body = body.replace(old_checkbox, new_checkbox)
                     get_logger().info(f"Applied suggestion to {file_path} lines {start_line}-{end_line}")
@@ -1060,7 +1061,7 @@ class PRCodeSuggestions:
                 improved_code = match.group(5)
 
                 # Skip if already marked as applied
-                if '✅ **Suggestion applied**' in full_block:
+                if '✅ **Suggestion applied**' in full_block or '[Suggestion processed]' in full_block:
                     continue
 
                 try:
@@ -1077,17 +1078,12 @@ class PRCodeSuggestions:
 
                     if normalized_improved and normalized_improved in normalized_file:
                         get_logger().info(f"mark_applied_suggestions: suggestion for {file_path} is applied")
-                        # Mark the checkbox as applied
-                        new_block = full_block.replace(
-                            '- [ ] **Apply this suggestion**',
-                            '- [x] ✅ **Suggestion applied**',
-                        )
-                        body = body.replace(full_block, new_block)
 
-                        # Mark the <summary> with ✅ and strikethrough
+                        # Mark the <summary> with ✅ and strikethrough BEFORE replacing the block
+                        # (so we can still locate the block position)
                         # Find the suggestion title <details><summary> that precedes this block.
                         # The title summary follows "___" divider, skip inner summaries like "Suggestion importance".
-                        block_pos = body.find(new_block)
+                        block_pos = body.find(full_block)
                         preceding = body[:block_pos]
                         summary_pattern = r'<details><summary>((?:(?!</details>).)*?)</summary>\n\n___'
                         summary_matches = list(re.finditer(summary_pattern, preceding, re.DOTALL))
@@ -1104,6 +1100,14 @@ class PRCodeSuggestions:
                                 after = body[last_summary.start():]
                                 after = after.replace(old_tag, new_tag, 1)
                                 body = before + after
+
+                        # Replace checkbox with [Suggestion processed] text
+                        new_block = re.sub(
+                            r'- \[[ x]\] (?:\*\*Apply this suggestion\*\*|✅ \*\*Suggestion applied\*\*)',
+                            '\n\n`[Suggestion processed]`\n',
+                            full_block,
+                        )
+                        body = body.replace(full_block, new_block)
                     else:
                         get_logger().info(
                             f"mark_applied_suggestions: suggestion for {file_path} not found in file",
