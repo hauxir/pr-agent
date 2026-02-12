@@ -624,8 +624,6 @@ class PRCodeSuggestions:
     def validate_one_liner_suggestion_not_repeating_code(self, suggestion):
         try:
             existing_code = suggestion.get('existing_code', '').strip()
-            if '...' in existing_code:
-                return suggestion
             new_code = suggestion.get('improved_code', '').strip()
 
             relevant_file = suggestion.get('relevant_file', '').strip()
@@ -638,6 +636,22 @@ class PRCodeSuggestions:
                         return suggestion
                     head_file = file.head_file
                     base_file = file.base_file
+
+                    # Check if improved code is already present in the head file
+                    # (catches previously applied suggestions, including multi-line ones)
+                    if new_code:
+                        normalized_new = re.sub(r'\s+', ' ', new_code)
+                        normalized_head = re.sub(r'\s+', ' ', head_file)
+                        if normalized_new in normalized_head:
+                            suggestion["score"] = 0
+                            get_logger().warning(
+                                f"improved_code already present in head file, setting score to 0",
+                                artifact={"suggestion": suggestion})
+                            return suggestion
+
+                    if '...' in existing_code:
+                        return suggestion
+
                     if existing_code in base_file and existing_code not in head_file and new_code in head_file:
                         suggestion["score"] = 0
                         get_logger().warning(
