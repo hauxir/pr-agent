@@ -274,21 +274,24 @@ class PRCodeSuggestions:
                 prev_comments = list(git_provider.get_issue_comments())
                 for comment in prev_comments:
                     if comment.body.startswith(initial_header):
-                        prev_suggestions = comment.body
                         found_comment = comment
                         comment_url = git_provider.get_comment_url(comment)
 
-                        if history_header.strip() not in comment.body:
+                        # Mark applied suggestions before folding into history
+                        prev_suggestions = PRCodeSuggestions.mark_applied_suggestions(
+                            comment.body, git_provider)
+
+                        if history_header.strip() not in prev_suggestions:
                             # no history section
-                            # extract everything between <table> and </table> in comment.body including <table> and </table>
-                            table_index = comment.body.find("<table>")
+                            # extract everything between <table> and </table> including <table> and </table>
+                            table_index = prev_suggestions.find("<table>")
                             if table_index == -1:
                                 git_provider.edit_comment(comment, pr_comment)
                                 continue
-                            # find http link from comment.body[:table_index]
-                            up_to_commit_txt = _extract_link(comment.body[:table_index])
-                            prev_suggestion_table = comment.body[
-                                                    table_index:comment.body.rfind("</table>") + len("</table>")]
+                            # find http link from prev_suggestions[:table_index]
+                            up_to_commit_txt = _extract_link(prev_suggestions[:table_index])
+                            prev_suggestion_table = prev_suggestions[
+                                                    table_index:prev_suggestions.rfind("</table>") + len("</table>")]
 
                             tick = "✅ " if "✅" in prev_suggestion_table else ""
                             # surround with details tag
@@ -305,7 +308,7 @@ class PRCodeSuggestions:
                             latest_table = sections[0].strip()
                             prev_suggestion_table = sections[1].replace(history_header, "").strip()
 
-                            # get text after the latest_suggestion_header in comment.body
+                            # get text after the latest_suggestion_header
                             table_ind = latest_table.find("<table>")
                             up_to_commit_txt = _extract_link(latest_table[:table_ind])
 
@@ -871,6 +874,13 @@ class PRCodeSuggestions:
 
                     pr_body += f"</details>"
 
+                    # add apply suggestion checkbox if enabled
+                    if get_settings().pr_code_suggestions.get('apply_suggestions_checkbox', False):
+                        improved_code = suggestion['improved_code'].rstrip()
+                        pr_body += f"\n\n- [ ] **Apply this suggestion**"
+                        pr_body += f" <!-- apply_suggestion:{relevant_file}:{relevant_lines_start}:{relevant_lines_end} -->"
+                        pr_body += f"\n<!-- improved_code\n{improved_code}\nend_improved_code -->"
+
                     # # add another column for 'score'
                     score_int = int(suggestion.get('score', 0))
                     score_str = f"{score_int}"
@@ -942,3 +952,146 @@ class PRCodeSuggestions:
             get_logger().info(f"Could not reflect on suggestions, error: {e}")
             return ""
         return response_reflect
+
+    @staticmethod
+    def handle_suggestion_checkbox(body: str, git_provider) -> str:
+        """
+        Process checked 'Apply this suggestion' checkboxes in a PR comment.
+        For each checked checkbox, apply the suggested code change and update the comment.
+        """
+        try:
+            # Pattern to find checked apply-suggestion checkboxes with their metadata and improved code
+            pattern = (
+                r'- \[x\] \*\*Apply this suggestion\*\*'
+                r' <!-- apply_suggestion:(.+?):(\d+):(\d+) -->'
+                r'\n<!-- improved_code\n(.*?)\nend_improved_code -->'
+            )
+            matches = list(re.finditer(pattern, body, re.DOTALL))
+            if not matches:
+                return body
+
+            branch = git_provider.get_pr_branch()
+            for match in matches:
+                file_path = match.group(1)
+                start_line = int(match.group(2))
+                end_line = int(match.group(3))
+                improved_code = match.group(4)
+
+                try:
+                    file_content = git_provider.get_pr_file_content(file_path, branch)
+                    if not file_content:
+                        get_logger().warning(f"Could not get file content for {file_path}")
+                        continue
+
+                    file_lines = file_content.split('\n')
+                    if start_line < 1 or end_line > len(file_lines):
+                        get_logger().warning(
+                            f"Line range {start_line}-{end_line} out of bounds for {file_path} ({len(file_lines)} lines)")
+                        continue
+
+                    # Replace the lines with the improved code
+                    new_lines = file_lines[:start_line - 1] + improved_code.split('\n') + file_lines[end_line:]
+                    new_content = '\n'.join(new_lines)
+
+                    git_provider.create_or_update_pr_file(
+                        file_path=file_path,
+                        branch=branch,
+                        contents=new_content,
+                        message=f"Apply suggestion: update {file_path} [{start_line}-{end_line}]",
+                    )
+
+                    # Update the checkbox text to indicate the suggestion was applied
+                    old_checkbox = match.group(0)
+                    new_checkbox = old_checkbox.replace(
+                        '- [x] **Apply this suggestion**',
+                        '- [x] ✅ **Suggestion applied**',
+                    )
+                    body = body.replace(old_checkbox, new_checkbox)
+                    get_logger().info(f"Applied suggestion to {file_path} lines {start_line}-{end_line}")
+                except Exception as e:
+                    get_logger().error(f"Failed to apply suggestion to {file_path}: {e}")
+                    continue
+        except Exception as e:
+            get_logger().error(f"Failed to process apply suggestion checkboxes: {e}")
+
+        return body
+
+    @staticmethod
+    def mark_applied_suggestions(body: str, git_provider) -> str:
+        """
+        Scan a previous suggestions comment for apply_suggestion metadata,
+        check if the improved code is now present in the current file content,
+        and mark applied suggestions with ✅ and strikethrough.
+        """
+        try:
+            # Match both checked and unchecked checkboxes with their metadata
+            pattern = (
+                r'(- \[[ x]\] \*\*(?:Apply this suggestion|✅ Suggestion applied)\*\*'
+                r' <!-- apply_suggestion:(.+?):(\d+):(\d+) -->'
+                r'\n<!-- improved_code\n(.*?)\nend_improved_code -->)'
+            )
+            matches = list(re.finditer(pattern, body, re.DOTALL))
+            if not matches:
+                return body
+
+            branch = git_provider.get_pr_branch()
+            # Cache file contents to avoid redundant API calls
+            file_cache = {}
+
+            for match in matches:
+                full_block = match.group(1)
+                file_path = match.group(2)
+                improved_code = match.group(5)
+
+                # Skip if already marked as applied
+                if '✅ **Suggestion applied**' in full_block:
+                    continue
+
+                try:
+                    if file_path not in file_cache:
+                        file_cache[file_path] = git_provider.get_pr_file_content(file_path, branch)
+                    file_content = file_cache[file_path]
+                    if not file_content:
+                        continue
+
+                    # Normalize whitespace for comparison
+                    normalized_improved = re.sub(r'\s+', ' ', improved_code.strip())
+                    normalized_file = re.sub(r'\s+', ' ', file_content.strip())
+
+                    if normalized_improved and normalized_improved in normalized_file:
+                        # Mark the checkbox as applied
+                        new_block = full_block.replace(
+                            '- [ ] **Apply this suggestion**',
+                            '- [x] ✅ **Suggestion applied**',
+                        )
+                        body = body.replace(full_block, new_block)
+
+                        # Mark the <summary> with ✅ and strikethrough
+                        # Find the <details><summary>...</summary> that precedes this block
+                        block_pos = body.find(new_block)
+                        preceding = body[:block_pos]
+                        # Find the last <details><summary>...</summary> before this block
+                        summary_pattern = r'<details><summary>((?:(?!</details>).)*?)</summary>'
+                        summary_matches = list(re.finditer(summary_pattern, preceding, re.DOTALL))
+                        if summary_matches:
+                            last_summary = summary_matches[-1]
+                            summary_text = last_summary.group(1)
+                            # Don't re-mark if already marked
+                            if not summary_text.startswith('✅'):
+                                new_summary_text = f'✅ <s>{summary_text}</s>'
+                                old_tag = f'<details><summary>{summary_text}</summary>'
+                                new_tag = f'<details><summary>{new_summary_text}</summary>'
+                                # Replace only the specific occurrence
+                                before = body[:last_summary.start()]
+                                after = body[last_summary.start():]
+                                after = after.replace(old_tag, new_tag, 1)
+                                body = before + after
+
+                except Exception as e:
+                    get_logger().error(f"Failed to check suggestion for {file_path}: {e}")
+                    continue
+
+        except Exception as e:
+            get_logger().error(f"Failed to mark applied suggestions: {e}")
+
+        return body
