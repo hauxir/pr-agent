@@ -1046,8 +1046,10 @@ class PRCodeSuggestions:
             )
             matches = list(re.finditer(pattern, body, re.DOTALL))
             if not matches:
+                get_logger().info("mark_applied_suggestions: no suggestion blocks found")
                 return body
 
+            get_logger().info(f"mark_applied_suggestions: found {len(matches)} suggestion blocks")
             branch = git_provider.get_pr_branch()
             # Cache file contents to avoid redundant API calls
             file_cache = {}
@@ -1066,6 +1068,7 @@ class PRCodeSuggestions:
                         file_cache[file_path] = git_provider.get_pr_file_content(file_path, branch)
                     file_content = file_cache[file_path]
                     if not file_content:
+                        get_logger().info(f"mark_applied_suggestions: empty file content for {file_path}")
                         continue
 
                     # Normalize whitespace for comparison
@@ -1073,6 +1076,7 @@ class PRCodeSuggestions:
                     normalized_file = re.sub(r'\s+', ' ', file_content.strip())
 
                     if normalized_improved and normalized_improved in normalized_file:
+                        get_logger().info(f"mark_applied_suggestions: suggestion for {file_path} is applied")
                         # Mark the checkbox as applied
                         new_block = full_block.replace(
                             '- [ ] **Apply this suggestion**',
@@ -1100,6 +1104,11 @@ class PRCodeSuggestions:
                                 after = body[last_summary.start():]
                                 after = after.replace(old_tag, new_tag, 1)
                                 body = before + after
+                    else:
+                        get_logger().info(
+                            f"mark_applied_suggestions: suggestion for {file_path} not found in file",
+                            artifact={"normalized_improved_first_80": normalized_improved[:80],
+                                      "file_content_length": len(file_content)})
 
                 except Exception as e:
                     get_logger().error(f"Failed to check suggestion for {file_path}: {e}")
