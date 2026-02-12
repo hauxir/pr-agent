@@ -1039,9 +1039,9 @@ class PRCodeSuggestions:
         and mark applied suggestions with ✅ and strikethrough.
         """
         try:
-            # Match both checked and unchecked checkboxes with their metadata
+            # Match unchecked apply-suggestion checkboxes with their metadata
             pattern = (
-                r'(- \[[ x]\] \*\*(?:Apply this suggestion|✅ Suggestion applied)\*\*'
+                r'(- \[ \] \*\*Apply this suggestion\*\*'
                 r' <!-- apply_suggestion:(.+?):(\d+):(\d+) -->'
                 r'\n<!-- improved_code\n(.*?)\nend_improved_code -->)'
             )
@@ -1060,8 +1060,8 @@ class PRCodeSuggestions:
                 file_path = match.group(2)
                 improved_code = match.group(5)
 
-                # Skip if already marked as applied
-                if '✅ **Suggestion applied**' in full_block or '[Suggestion processed]' in full_block:
+                # Skip if already processed
+                if '[Suggestion processed]' in full_block:
                     continue
 
                 try:
