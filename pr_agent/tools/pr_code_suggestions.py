@@ -1085,11 +1085,11 @@ class PRCodeSuggestions:
                         body = body.replace(full_block, new_block)
 
                         # Mark the <summary> with ✅ and strikethrough
-                        # Find the <details><summary>...</summary> that precedes this block
+                        # Find the suggestion title <details><summary> that precedes this block.
+                        # The title summary follows "___" divider, skip inner summaries like "Suggestion importance".
                         block_pos = body.find(new_block)
                         preceding = body[:block_pos]
-                        # Find the last <details><summary>...</summary> before this block
-                        summary_pattern = r'<details><summary>((?:(?!</details>).)*?)</summary>'
+                        summary_pattern = r'<details><summary>((?:(?!</details>).)*?)</summary>\n\n___'
                         summary_matches = list(re.finditer(summary_pattern, preceding, re.DOTALL))
                         if summary_matches:
                             last_summary = summary_matches[-1]
